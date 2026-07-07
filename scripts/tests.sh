@@ -1,164 +1,317 @@
 #!/usr/bin/env bash
-# test.sh
 
-TEST="test_$(date --utc +"%s")"
-trap 'rm -rf $TEST; \
-      git reset --hard $STARTING_COMMIT;' EXIT
-      #git reset HEAD~$TEST_COMMIT_COUNT;' EXIT
+TEST_ROOT=$(mktemp -d)
+TEST_REPO="$TEST_ROOT/repo"
+PR_NUMBER=1000
+LABEL_OVERRIDES=''
+FAILURE=''
 
-STARTING_COMMIT=$(git rev-parse HEAD)
+trap 'rm -rf "$TEST_ROOT"' EXIT
 
-TEST_COMMIT_COUNT=0
-
-function printHeading () {
-    txt="$@";
-    printf "\n\e[01;39m${txt}\e[0m ";
-    printf '\n%*s' "$((${COLUMNS}-$((${COLUMNS}-$(wc -c<<<$txt)+1))))" | tr ' ' -;
-    printf '\n'
+printHeading() {
+  local txt="$*"
+  printf "\n\e[01;39m%s\e[0m\n" "$txt"
+  printf '%*s\n' "${#txt}" '' | tr ' ' '-'
 }
 
-function add_history() {
-  if [[ $# -ne 3 ]] && [[ $# -ne 4 ]]; then echo "ERROR: Exactly 3 or 4 arguments required!"; return 1; fi
-  DIR="$1"
-  COUNT="$2"
-  BRANCH_TYPE="$3"
-  MAJOR="$4"
-  cd "$DIR"
-  for i in $(seq 1 $COUNT); do
-    TEST_FILE="${i}_$(date +"%s%6N")"
-    touch $TEST_FILE
-    git add "$TEST_FILE" >/dev/null 2>&1
-    [[ -n $MAJOR ]] && git commit -m "+semver major $TEST" >/dev/null 2>&1
-    git commit -m "Merge pull request #9999 from AlexAtkinson/$BRANCH_TYPE/${TEST}_$i" >/dev/null 2>&1
-  done
-  cd - >/dev/null 2>&1
+script_dir="$(realpath "$(dirname "${BASH_SOURCE[0]}")")"
+
+setup_repo() {
+  mkdir -p "$TEST_REPO"
+  cd "$TEST_REPO" || exit 1
+  git init >/dev/null 2>&1
+  git config user.name test-user
+  git config user.email test@example.com
+  git remote add origin git@github.com:example/test.git
+  mkdir -p A B C D E F
+  echo init > README.md
+  git add README.md A B C >/dev/null 2>&1
+  git commit -m init >/dev/null 2>&1
 }
 
-function test_previous() {
-  if [[ $# -lt 3 ]]; then echo "ERROR: At least 3 arguments required!"; return 1; fi
-  TEST_TYPE="${1:-Repository}" # Repository, Directory
-  DIRECTORY="${2:-./}"
-  ASSERTION="$3"
-  COMMENT="${@:4}"; [[ -z $COMMENT ]] && COMMENT="No Comment"
-  if [[ "$TEST_TYPE" == "Repository" ]]; then
-    echo -e "\e[01;39m$TEST_TYPE: Previous Version ($COMMENT)\e[0m"
-    TEST_OUTPUT=$(scripts/detectPreviousVersion.sh)
-    if grep -q "$ASSERTION" <<<$TEST_OUTPUT; then RESULT="\e[01;32mOK\e[0m"; else RESULT="\e[01;31mFAIL\e[0m"; FAILURE="TRUE"; fi
-    echo -e " $RESULT - $TEST_OUTPUT"
-  fi
-  if [[ "$TEST_TYPE" == "Directory" ]]; then
-    echo -e "\e[01;39m$TEST_TYPE - $DIRECTORY: Previous Version ($COMMENT)\e[0m"
-    TEST_OUTPUT=$(scripts/detectPreviousVersion.sh -d "$DIRECTORY" -n "${DIRECTORY##*/}")
-    if grep -q "$ASSERTION" <<<$TEST_OUTPUT; then RESULT="\e[01;32mOK\e[0m"; else RESULT="\e[01;31mFAIL\e[0m"; FAILURE="TRUE"; fi
-    echo -e " $RESULT - $TEST_OUTPUT"
-  fi
+append_label_override() {
+  local pr_number="$1"
+  local label="$2"
+  [[ -z "$label" ]] && return 0
+
+  [[ -n "$LABEL_OVERRIDES" ]] && LABEL_OVERRIDES+=";"
+  LABEL_OVERRIDES+="${pr_number}=${label}"
 }
 
-function test_new() {
-  if [[ $# -lt 3 ]]; then echo "ERROR: At least 3 arguments required!"; return 1; fi
-  TEST_TYPE="${1:-Repository}" # Repository, Directory
-  DIRECTORY="${2:-./}"
-  ASSERTION="$3"
-  COMMENT="${@:4}"; [[ -z $COMMENT ]] && COMMENT="No Comment"
-  if [[ "$TEST_TYPE" == "Repository" ]]; then
-    echo -e "\e[01;39m$TEST_TYPE: New Version ($COMMENT)\e[0m"
-    TEST_OUTPUT=$(scripts/detectNewVersion.sh)
-    if grep -q "$ASSERTION" <<<$TEST_OUTPUT; then RESULT="\e[01;32mOK\e[0m"; else RESULT="\e[01;31mFAIL\e[0m"; FAILURE="TRUE"; fi
-    echo -e " $RESULT - $TEST_OUTPUT"
-  fi
-  if [[ "$TEST_TYPE" == "Directory" ]]; then
-    echo -e "\e[01;39m$TEST_TYPE - $DIRECTORY: New Version ($COMMENT)\e[0m"
-    TEST_OUTPUT=$(scripts/detectNewVersion.sh -d "$DIRECTORY" -n "${DIRECTORY##*/}")
-    if grep -q "$ASSERTION" <<<$TEST_OUTPUT; then RESULT="\e[01;32mOK\e[0m"; else RESULT="\e[01;31mFAIL\e[0m"; FAILURE="TRUE"; fi
-    echo -e " $RESULT - $TEST_OUTPUT"
-  fi
-}
-
-relative_path="$(dirname "${BASH_SOURCE[0]}")"
-dir="$(realpath "${relative_path}")"
-
-ci_name=$("${dir}/detect-ci.sh")
-origin=$(git config --get remote.origin.url)
-
-#origin=${ci_name:-origin}
-# Executes in ANY CI so long as repo origin is one of the following.
-# Uncomment origin override to restrict this.
-[[ "$origin" =~ "git@github.com"* || "$ci_name" == "github" ]] && origin_host=github
-[[ "$origin" =~ "git@gitlab.com"* || "$ci_name" == "gitlab" ]] && origin_host=gitlab
-[[ "$origin" =~ "git@bitbucket.com"* || "$ci_name" == "bitbucket" ]] && origin_host=bitbucket
-
-case "$origin_host" in
-  github)
-    merge_string="Merge pull request #"
-    column=7
-    field=2
-  ;;
-  gitlab)
-    merge_string="Merge branch"
-    column=4
-    field=1
-  ;;
-  bitbucket)
-    merge_string="Merged in"
-    column=4
-    field=1
-  ;;
-  *)
-    echo -e "\e[01;31mERROR\e[0m: 591 - Unsupported origin host."
+add_history() {
+  if [[ $# -lt 3 || $# -gt 4 ]]; then
+    echo "ERROR: add_history requires 3 or 4 arguments"
     exit 1
-  ;;
-esac
+  fi
 
+  local directory="$1"
+  local count="$2"
+  local branch_type="$3"
+  local label_override="$4"
+  local pr_number=''
+  local test_file=''
+  local i=''
 
-# TEST: Repo Versioning
+  for i in $(seq 1 "$count"); do
+    PR_NUMBER=$((PR_NUMBER + 1))
+    pr_number="$PR_NUMBER"
+    test_file="$directory/${branch_type}_${i}_$(date +%s%N)"
+    echo "$pr_number" >> "$test_file"
+    git add "$test_file" >/dev/null 2>&1
+    git commit -m "Merge pull request #${pr_number} from example/${branch_type}/${directory}_${i}" >/dev/null 2>&1
+    append_label_override "$pr_number" "$label_override"
+  done
+}
 
-## Activities
+add_repo_history() {
+  if [[ $# -lt 2 || $# -gt 3 ]]; then
+    echo "ERROR: add_repo_history requires 2 or 3 arguments"
+    exit 1
+  fi
 
-# Tests:
-# - Repo Versioning
-# - Diectory Versioning
-# - x Minor Increments
-# - x Patch Increments
+  local count="$1"
+  local branch_type="$2"
+  local label_override="$3"
+  local pr_number=''
+  local test_file=''
+  local i=''
 
-printHeading Running Test: $TEST
+  for i in $(seq 1 "$count"); do
+    PR_NUMBER=$((PR_NUMBER + 1))
+    pr_number="$PR_NUMBER"
+    test_file="repo_${branch_type}_${i}_$(date +%s%N)"
+    echo "$pr_number" >> "$test_file"
+    git add "$test_file" >/dev/null 2>&1
+    git commit -m "Merge pull request #${pr_number} from example/${branch_type}/repo_${i}" >/dev/null 2>&1
+    append_label_override "$pr_number" "$label_override"
+  done
+}
 
-echo NOTE: These tests are not committed.
+add_repo_major_commit() {
+  local marker_file=''
 
-mkdir -p $TEST/{A..C}
+  marker_file="repo_major_$(date +%s%N)"
+  echo major > "$marker_file"
+  git add "$marker_file" >/dev/null 2>&1
+  git commit -m "+semver major tests" >/dev/null 2>&1
+}
 
-# Directory Test: A
-# ASSERTIONS:
-# - Previous version is: A_0.0.0
-# - New Version is: ERROR: 599
-test_previous "Repository" "./" "$(scripts/detectPreviousVersion.sh)"
-test_new "Repository" "./" " 599"
+add_repo_squash_history() {
+  if [[ $# -lt 1 || $# -gt 2 ]]; then
+    echo "ERROR: add_repo_squash_history requires 1 or 2 arguments"
+    exit 1
+  fi
 
-test_previous "Directory" "$TEST/A" "A_0.0.0"
-test_new "Directory" "$TEST/A" " 599"
+  local count="$1"
+  local label_override="$2"
+  local pr_number=''
+  local test_file=''
+  local i=''
 
-test_previous "Directory" "$TEST/B" "B_0.0.0"
-add_history "$TEST/B" 3 ops
-test_new "Directory" "$TEST/B" "B_0.0.3" patches +3
-git tag -a "B_0.0.3" -m "TAG"
-test_previous "Directory" "$TEST/B" "B_0.0.3" previous version tagged
-add_history "$TEST/B" 17 ops
-test_new "Directory" "$TEST/B" "B_0.0.20" patches +17
-git tag -d "B_0.0.3" >/dev/null 2>&1
+  for i in $(seq 1 "$count"); do
+    PR_NUMBER=$((PR_NUMBER + 1))
+    pr_number="$PR_NUMBER"
+    test_file="repo_squash_${i}_$(date +%s%N)"
+    echo "$pr_number" >> "$test_file"
+    git add "$test_file" >/dev/null 2>&1
+    git commit -m "Some squashed change ${i} (#${pr_number})" >/dev/null 2>&1
+    append_label_override "$pr_number" "$label_override"
+  done
+}
 
-test_previous "Directory" "$TEST/C" "C_0.0.0"
-add_history "$TEST/C" 9 ops
-test_new "Directory" "$TEST/C" "C_0.0.9" patches +9
-git tag -a "C_0.0.9" -m "TAG"
-test_previous "Directory" "$TEST/C" "C_0.0.9" previous version tagged
-test_new "Directory" "$TEST/C" " 599"
+add_major_commit() {
+  local directory="$1"
+  local marker_file=''
 
-add_history "$TEST/C" 5 feature
-test_new "Directory" "$TEST/C" "C_0.5.0" features +5
-git tag -a "C_0.5.0" -m "TAG"
-add_history "$TEST/C" 19 ops
-test_new "Directory" "$TEST/C" "C_0.5.19" patches +19
-add_history "$TEST/C" 1 features major
-test_new "Directory" "$TEST/C" "C_1.0.0" features +1 BREAKING
-git tag -d "C_0.0.9" >/dev/null 2>&1
-git tag -d "C_0.5.0" >/dev/null 2>&1
+  marker_file="$directory/major_$(date +%s%N)"
+  echo major > "$marker_file"
+  git add "$marker_file" >/dev/null 2>&1
+  git commit -m "+semver major tests" >/dev/null 2>&1
+}
+
+run_detect_previous() {
+  local directory="$1"
+
+  if [[ "$directory" == './' ]]; then
+    "$script_dir/detectPreviousVersion.sh"
+  else
+    "$script_dir/detectPreviousVersion.sh" -d "$directory" -n "${directory##*/}"
+  fi
+}
+
+run_detect_new() {
+  local directory="$1"
+  local cmd=("$script_dir/detectNewVersion.sh")
+
+  if [[ "$directory" != './' ]]; then
+    cmd+=(-d "$directory" -n "${directory##*/}")
+  fi
+
+  [[ -n "$LABEL_OVERRIDES" ]] && cmd+=(-l "$LABEL_OVERRIDES")
+
+  "${cmd[@]}" 2>&1
+}
+
+assert_match() {
+  local expected="$1"
+  local actual="$2"
+
+  if grep -q "$expected" <<< "$actual"; then
+    echo -e " \e[01;32mOK\e[0m - $actual"
+  else
+    FAILURE='true'
+    echo -e " \e[01;31mFAIL\e[0m - expected '$expected', got '$actual'"
+  fi
+}
+
+test_previous() {
+  local directory="$1"
+  local expected="$2"
+  local comment="$3"
+  local actual=''
+
+  echo -e "\e[01;39mPrevious Version ${directory} (${comment})\e[0m"
+  actual=$(run_detect_previous "$directory")
+  assert_match "$expected" "$actual"
+}
+
+test_new() {
+  local directory="$1"
+  local expected="$2"
+  local comment="$3"
+  local actual=''
+
+  echo -e "\e[01;39mNew Version ${directory} (${comment})\e[0m"
+  actual=$(run_detect_new "$directory")
+  assert_match "$expected" "$actual"
+}
+
+test_new_full() {
+  local directory="$1"
+  local expected="$2"
+  local comment="$3"
+  local actual=''
+  local cmd=("$script_dir/detectNewVersion.sh" -f)
+
+  if [[ "$directory" != './' ]]; then
+    cmd+=(-d "$directory" -n "${directory##*/}")
+  fi
+
+  [[ -n "$LABEL_OVERRIDES" ]] && cmd+=(-l "$LABEL_OVERRIDES")
+
+  echo -e "\e[01;39mNew Version (full re-evaluation) ${directory} (${comment})\e[0m"
+  actual=$("${cmd[@]}" 2>&1)
+  assert_match "$expected" "$actual"
+}
+
+setup_repo
+
+printHeading 'Running isolated local tests'
+
+test_previous './' '0.0.0' 'repo initializes at zero'
+test_new './' '599' 'repo without qualifying merges'
+
+add_repo_history 2 feature
+add_repo_history 1 enhancement
+test_new './' '0.3.0' 'repo feature and enhancement branches increment minor versions'
+git tag -a '0.3.0' -m TAG >/dev/null 2>&1
+test_previous './' '0.3.0' 'repo previous version tagged'
+
+add_repo_history 1 fix
+add_repo_history 1 bugfix
+add_repo_history 1 hotfix
+add_repo_history 1 ops
+test_new './' '0.3.4' 'repo fix, bugfix, hotfix, and ops branches increment patch versions'
+git tag -a '0.3.4' -m TAG >/dev/null 2>&1
+test_previous './' '0.3.4' 'repo previous patch version tagged'
+
+add_repo_history 1 feature 'semver:patch'
+test_new './' '0.3.5' 'repo semver patch label overrides feature branch'
+git tag -a '0.3.5' -m TAG >/dev/null 2>&1
+
+add_repo_history 1 fix 'semver:minor'
+test_new './' '0.4.0' 'repo semver minor label overrides fix branch'
+git tag -a '0.4.0' -m TAG >/dev/null 2>&1
+
+add_repo_history 1 ops 'semver:major'
+test_new './' '1.0.0' 'repo semver major label overrides ops branch'
+git tag -a '1.0.0' -m TAG >/dev/null 2>&1
+
+add_repo_major_commit
+test_new './' '2.0.0' 'repo commit-level semver major still works'
+git tag -a '2.0.0' -m TAG >/dev/null 2>&1
+
+add_repo_squash_history 1 'semver:minor'
+test_new './' '2.1.0' 'squash-merged PR classified via semver minor label'
+git tag -a '2.1.0' -m TAG >/dev/null 2>&1
+
+add_repo_squash_history 1
+test_new './' '599' 'unlabeled squash-merged PR is not classified'
+add_repo_history 1 fix
+test_new './' '2.1.1' 'unlabeled squash merge ignored alongside fix merge'
+git tag -a '2.1.1' -m TAG >/dev/null 2>&1
+
+test_previous 'A' 'A_0.0.0' 'directory initializes independently'
+test_new 'A' '599' 'directory without qualifying merges'
+
+test_previous 'B' 'B_0.0.0' 'directory initializes independently'
+add_history 'B' 3 ops
+test_new 'B' 'B_0.0.3' 'patches +3'
+git tag -a 'B_0.0.3' -m TAG >/dev/null 2>&1
+test_previous 'B' 'B_0.0.3' 'previous version tagged'
+
+test_previous 'A' 'A_0.0.0' 'newer B tag does not affect A history'
+
+test_previous 'C' 'C_0.0.0' 'directory initializes independently'
+add_history 'C' 5 feature
+test_new 'C' 'C_0.5.0' 'features +5'
+git tag -a 'C_0.5.0' -m TAG >/dev/null 2>&1
+
+add_history 'C' 1 feature 'semver:patch'
+test_new 'C' 'C_0.5.1' 'semver patch label overrides feature branch'
+git tag -a 'C_0.5.1' -m TAG >/dev/null 2>&1
+
+add_history 'C' 1 ops 'semver:minor'
+test_new 'C' 'C_0.6.0' 'semver minor label overrides ops branch'
+git tag -a 'C_0.6.0' -m TAG >/dev/null 2>&1
+
+add_history 'C' 1 ops 'semver:major'
+test_new 'C' 'C_1.0.0' 'semver major label overrides ops branch'
+git tag -a 'C_1.0.0' -m TAG >/dev/null 2>&1
+
+add_major_commit 'C'
+test_new 'C' 'C_2.0.0' 'commit-level semver major still works'
+
+test_previous 'D' 'D_0.0.0' 'directory initializes independently'
+add_history 'D' 2 feature
+add_history 'D' 3 enhancement
+test_new 'D' 'D_0.5.0' 'feature and enhancement branches increment minor versions'
+git tag -a 'D_0.5.0' -m TAG >/dev/null 2>&1
+
+test_previous 'E' 'E_0.0.0' 'directory initializes independently'
+add_history 'E' 1 fix
+add_history 'E' 1 bugfix
+add_history 'E' 1 hotfix
+add_history 'E' 1 ops
+test_new 'E' 'E_0.0.4' 'fix, bugfix, hotfix, and ops branches increment patch versions'
+git tag -a 'E_0.0.4' -m TAG >/dev/null 2>&1
+
+test_previous 'F' 'F_0.0.0' 'directory initializes independently'
+add_history 'F' 1 enhancement 'semver:patch'
+test_new 'F' 'F_0.0.1' 'semver patch label overrides enhancement minor branch'
+git tag -a 'F_0.0.1' -m TAG >/dev/null 2>&1
+
+add_history 'F' 1 fix 'semver:minor'
+test_new 'F' 'F_0.1.0' 'semver minor label overrides fix patch branch'
+git tag -a 'F_0.1.0' -m TAG >/dev/null 2>&1
+
+add_history 'F' 1 hotfix 'semver:major'
+test_new 'F' 'F_1.0.0' 'semver major label overrides hotfix patch branch'
+
+test_new_full './' '3.0.0' 'parallel full re-evaluation detects repo major'
+test_new_full 'F' 'F_1.0.0' 'parallel full re-evaluation detects directory major'
+
+if [[ -n "$FAILURE" ]]; then
+  exit 1
+fi
 

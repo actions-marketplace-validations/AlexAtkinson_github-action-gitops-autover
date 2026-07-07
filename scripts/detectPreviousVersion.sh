@@ -88,7 +88,6 @@ while getopts "hv9cn:d:" opt; do
     d)
       arg_d='set'
       arg_d_val="$OPTARG"
-      arg_d_opt="--full-history"
       arg_opts="$arg_opts -d $OPTARG"
       ;;
     *)
@@ -117,9 +116,22 @@ fi
 relative_path="$(dirname "${BASH_SOURCE[0]}")"
 dir="$(realpath "${relative_path}")"
 
-lastVersion=$(git for-each-ref --sort=creatordate --format '%(refname:lstrip=2)' refs/tags | grep -E "$semverRegex" | tail -n 1)
-# Support mono-repos where a product name is specified.
-[[ -n $arg_n ]] && lastVersion=$(git for-each-ref --sort=creatordate --format '%(refname:lstrip=2)' refs/tags | grep "$arg_n_val" | grep -E "$semverRegex" | tail -n 1)
+historyCmd=(git log --format='%H')
+[[ -n $arg_d ]] && historyCmd+=(--full-history)
+historyCmd+=(HEAD)
+[[ -n $arg_d ]] && historyCmd+=(-- "$arg_d_val")
+
+while IFS= read -r historyHash || [[ -n "$historyHash" ]]; do
+  [[ -z "$historyHash" ]] && continue
+
+  candidateTags=$(git tag --points-at "$historyHash" | grep -E "$semverRegex")
+  [[ -n $arg_n ]] && candidateTags=$(printf '%s\n' "$candidateTags" | grep -F "$arg_n_val")
+
+  if [[ -n "$candidateTags" ]]; then
+    lastVersion=$(printf '%s\n' "$candidateTags" | sort -V | tail -n 1)
+    break
+  fi
+done < <("${historyCmd[@]}")
 
 # --------------------------------------------------------------------------------------------------
 # Sanity (2/2)

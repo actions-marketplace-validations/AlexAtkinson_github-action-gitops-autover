@@ -1,0 +1,16 @@
+{
+  "chat.tools.terminal.autoApprove": {
+    "/^bash scripts/tests\\.sh$/": {
+      "approve": true,
+      "matchCommandLine": true
+    },
+    "/^tmpdir=\\$\\(mktemp -d\\) && cd \"\\$tmpdir\" && git init >/dev/null && git config user\\.email test@example\\.com && git config user\\.name tester && git remote add origin git@github\\.com:example/test\\.git && mkdir C && echo init > README\\.md && git add README\\.md C && git commit -m init >/dev/null && echo one > C/file1 && git add C/file1 && git commit -m 'Merge pull request #101 from example/ops/C_1' >/dev/null && git tag C_1\\.0\\.0 && echo major > C/file2 && git add C/file2 && bash -x /home/alex/git/alexatkinson/github-action-gitops-autover/scripts/detectNewVersion\\.sh -d C -n C$/": {
+      "approve": true,
+      "matchCommandLine": true
+    }
+  },
+  "cSpell.words": [
+    "hefpndl",
+    "vfpn"
+  ]
+}
