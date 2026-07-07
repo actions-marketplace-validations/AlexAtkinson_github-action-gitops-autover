@@ -21,6 +21,10 @@ inputs:
     description: "The path to the product. IE: 'path/to/bob'. Required if 'mono-repo-mode' is enabled."
     required: false
     default: ''
+  pr-label-overrides:
+    description: "Optional/debug PR label overrides. Format: '123=semver:patch;124=semver:minor'."
+    required: false
+    default: ''
 outputs:
   new-version:
     description: "New Version"
@@ -45,19 +49,23 @@ runs:
       id: previous-version
       run: |
           cd $GITHUB_WORKSPACE
-          echo "previous-version=$(${{ github.action_path }}/scripts/detectPreviousVersion.sh)" | tee $GITHUB_OUTPUT
+          opt=()
+          [[ "${{ inputs.mono-repo-product-name }}" != "" ]] && opt+=(-n "${{ inputs.mono-repo-product-name }}")
+          [[ "${{ inputs.mono-repo-product-path }}" != "" ]] && opt+=(-d "${{ inputs.mono-repo-product-path }}")
+          echo "previous-version=$(${{ github.action_path }}/scripts/detectPreviousVersion.sh "${opt[@]}")" | tee $GITHUB_OUTPUT
       shell: bash
     - name: Detect New Version
       id: new-version
       run: |
           cd $GITHUB_WORKSPACE
-          opt=''
-          [[ "${{ github.event.inputs.force-re-evaluate }}" == 'true' ]] && opt='$opt -f'
-          [[ "${{ github.event.inputs.force-patch-increment }}" == 'true' ]] && opt='$opt -p'
-          [[ "${{ github.event.inputs.mono-repo-product-name }}" != "" ]] && opt='$opt -n ${{ github.event.inputs.mono-repo-product-name }}'
-          [[ "${{ github.event.inputs.mono-repo-product-path }}" != "" ]] && opt='$opt -d ${{ github.event.inputs.mono-repo-product-path }}'
-          new_version="$(${{ github.action_path }}/scripts/detectNewVersion.sh $opt)" || true
-          debug_cmd="echo ${{ github.action_path }}/scripts/detectNewVersion.sh $opt" || true
+          opt=()
+          [[ "${{ inputs.force-re-evaluate }}" == 'true' ]] && opt+=(-f)
+          [[ "${{ inputs.force-patch-increment }}" == 'true' ]] && opt+=(-p)
+          [[ "${{ inputs.mono-repo-product-name }}" != "" ]] && opt+=(-n "${{ inputs.mono-repo-product-name }}")
+          [[ "${{ inputs.mono-repo-product-path }}" != "" ]] && opt+=(-d "${{ inputs.mono-repo-product-path }}")
+          [[ "${{ inputs.pr-label-overrides }}" != "" ]] && opt+=(-l "${{ inputs.pr-label-overrides }}")
+          new_version="$(${{ github.action_path }}/scripts/detectNewVersion.sh "${opt[@]}")" || true
+          debug_cmd="${{ github.action_path }}/scripts/detectNewVersion.sh $(printf '%q ' "${opt[@]}")" || true
           echo "new-version=$new_version" | tee $GITHUB_OUTPUT
           if [[ "$new_version" =~ "520" ]]; then
             echo -e "ERROR: 520 - You must source this script when specifying an environment variable! Eg: '. ./foo.sh -e bar_ver'"
@@ -75,21 +83,28 @@ runs:
             echo -e "ERROR: 591 - Unsupported origin host."
             exit 1 || true
           fi
+          if [[ "$new_version" =~ "592" ]]; then
+            echo -e "ERROR: 592 - PR/MR label lookup failed!"
+            exit 1 || true
+          fi
           if [[ "$new_version" =~ "599" ]]; then
             echo -e "ERROR: 599 - No feature, enhancement, fix, bugfix, hotfix, or ops branches detected!"
             exit 1 || true
           fi
       shell: bash
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
     - name: Debug Cmd
       id: debug-cmd
       run: |
           cd $GITHUB_WORKSPACE
-          opt=''
-          [[ "${{ github.event.inputs.force-re-evaluate }}" == 'true' ]] && opt='$opt -f'
-          [[ "${{ github.event.inputs.force-patch-increment }}" == 'true' ]] && opt='$opt -p'
-          [[ "${{ github.event.inputs.mono-repo-product-name }}" != "" ]] && opt='$opt -n ${{ github.event.inputs.mono-repo-product-name }}'
-          [[ "${{ github.event.inputs.mono-repo-product-path }}" != "" ]] && opt='$opt -d ${{ github.event.inputs.mono-repo-product-path }}'
-          debug_cmd="echo ${{ github.action_path }}/scripts/detectNewVersion.sh $opt" || true
+          opt=()
+          [[ "${{ inputs.force-re-evaluate }}" == 'true' ]] && opt+=(-f)
+          [[ "${{ inputs.force-patch-increment }}" == 'true' ]] && opt+=(-p)
+          [[ "${{ inputs.mono-repo-product-name }}" != "" ]] && opt+=(-n "${{ inputs.mono-repo-product-name }}")
+          [[ "${{ inputs.mono-repo-product-path }}" != "" ]] && opt+=(-d "${{ inputs.mono-repo-product-path }}")
+          [[ "${{ inputs.pr-label-overrides }}" != "" ]] && opt+=(-l "${{ inputs.pr-label-overrides }}")
+          debug_cmd="${{ github.action_path }}/scripts/detectNewVersion.sh $(printf '%q ' "${opt[@]}")" || true
           echo "debug-cmd=$debug_cmd" | tee $GITHUB_OUTPUT
       shell: bash
 

@@ -12,7 +12,7 @@ Language/content agnostic method of automatically determining the [semantic vers
 
 This is accomplished by counting the merges of branches matching the [naming scheme](#branch-naming-scheme) into the [main|master] branch. Folks familiar with Scrum/SAFe or GitFlow/fooFlow strategies will recognize this scheme.
 
-**Burning Questions**
+## Burning Questions
 
 - **Yes** - This can indeed be implemented in repos that previously used different version increment methods.
 - **Yes** - Jira will recognize the issue tag anywhere in the branch name -- it does not have to be a prefix for the integration to function.
@@ -22,6 +22,7 @@ This is accomplished by counting the merges of branches matching the [naming sch
 
 ## Recent Changes
 
+- 1.1.0: Squash-merge support (PR/MR classified via semver labels), GitLab label lookups, hard-fail on label lookup errors (592), and parallel full-history re-evaluation.
 - 1.0.0: (non-breaking) Addition of support for mono-repos. IE: Discretely version specific directories.
   - NOTE: Github, Jira, etc., were designed to host one product per repo/project. DO NOT create new mono-repo projects unless you're specifically tooling out to support them well.
 - 0.3.1: Update the checkout action version to v4.
@@ -73,6 +74,16 @@ Note: Only required for setting up mono-repo versioning.
     Eg: path/to/bob<br>
     <i>Required:</i> if mono-repo-mode: true<br>
     <i>Default:</i> ''</dd>
+  <dt>pr-label-overrides: [string]</dt>
+    <dd>Optional debug input for supplying PR label overrides manually.<br>
+    Format: '123=semver:patch;124=semver:minor'<br>
+    <i>Required:</i> false<br>
+    <i>Default:</i> ''</dd>
+  <dt>force-re-evaluate: [bool]</dt>
+    <dd>Forces a re-evaluation of the entire git history.<br>
+    Commit classification runs in parallel using nproc-1 jobs (minimum 1).<br>
+    <i>Required:</i> false<br>
+    <i>Default:</i> false</dd>
   <dt>force-patch-increment: [bool]</dt>
     <dd>Forces a PATCH increment if no other increment detected.<br>
     (Intended for development purposes only.)<br>
@@ -123,6 +134,7 @@ To make use of the mono-repo support, simply add a block for the director you wi
           uses: AlexAtkinson/github-action-gitops-autover@0.3.1
           with:
             mono-repo-product-name: bob
+            mono-repo-product-path: path/to/bob
 
 This results in outputs like:
 
@@ -211,6 +223,33 @@ This action depends _only_ on the following _branch naming scheme_ being observe
 
 For example, the name of the branch for a new awesome feature named Awesome Feature, might be: 'feature/awesome_feature'.
 
+### PR Label Precedence
+
+When a merged PR has one of the labels 'semver:patch', 'semver:minor', 'semver:major', or 'semver:breaking', that label takes precedence over the branch name for bump selection.
+
+Label lookup support by platform:
+
+<dl>
+  <dt>GitHub</dt>
+    <dd>Native label lookup. Requires GITHUB_TOKEN (or AUTOVER_GITHUB_TOKEN) and GITHUB_REPOSITORY.</dd>
+  <dt>GitLab</dt>
+    <dd>Native label lookup. Requires GITLAB_TOKEN (or AUTOVER_GITLAB_TOKEN) and CI_PROJECT_ID (or AUTOVER_GITLAB_PROJECT).</dd>
+  <dt>Bitbucket</dt>
+    <dd>Bitbucket Cloud has no PR labels. Use 'pr-label-overrides' or AUTOVER_PR_LABEL_OVERRIDES.</dd>
+</dl>
+
+If a label lookup is configured (credentials present) but cannot complete, the run fails with error 592 rather than silently falling back to branch-name classification.
+
+### Squash Merges
+
+Squash merges are supported where the PR/MR number can be recovered from the commit:
+
+- GitHub: squash commit subjects retain the PR number as a '(#123)' suffix.
+- Bitbucket: commit subjects use 'Merged in <branch> (pull request #123)'.
+- GitLab: the MR reference ('!123') is read from the commit subject or body.
+
+Since a squashed commit does not carry the source branch name, classification of squash merges relies on semver labels (or overrides). Unlabeled squash merges are ignored.
+
 ## Appropriate Use Cases
 
 This action is _most_ suitable for git projects with the following operational design:
@@ -218,12 +257,14 @@ This action is _most_ suitable for git projects with the following operational d
 - Each merge into main|master is intended to produce an artifact, following the "everything is potentially releasabe" approach.
 
 This action is _not_ suitable for projects requiring:
-  - pre-release, beta, etc., type fields. Such projects should depend upon their own language native tooling.
-  - specific version numbers to be planned and orchestrated ahead of time (usually marketing efforts).
-    - Exception: Major releases. These can be actioned on demand as outlined below.
-  - rebase merges. Reminder: this action _depends_ on merge commit messages.
-    - Exception: Patterns like: main < (merge-commit) < staging-branch < (rebase) work-branches
-      - As long as main|master gets a merge commit message, everyone is happy.
+
+- pre-release, beta, etc., type fields. Such projects should depend upon their own language native tooling.
+- specific version numbers to be planned and orchestrated ahead of time (usually marketing efforts).
+  - Exception: Major releases. These can be actioned on demand as outlined below.
+- rebase merges. Reminder: this action _depends_ on merge or squash commit messages.
+  - Exception: Patterns like: main < (merge-commit) < staging-branch < (rebase) work-branches
+    - As long as main|master gets a merge commit message, everyone is happy.
+  - Exception: Squash merges where the PR carries a semver label (see Squash Merges above).
 
 ## Version Format
 
@@ -246,11 +287,13 @@ This increment can be accomplished in one of the following ways:
         git tag 1.0.0
         git push --tags
 
+In mono-repo mode, the MAJOR indicator must appear on a commit that touches the scoped directory, otherwise that product's history will not include it.
+
 ## Version Increment Logic
 
 For those interested, here's some pseudo code:
 
-    lastMajor = Extract from previous git tag (why option 1 is recommended)
+    lastMajor = Extract from previous git tag on the repo or scoped directory history
     lastMinor = Extract from previous git tag
     lastPatch = Extract from previous git tag
     IF no previous git tag; THEN
@@ -261,6 +304,8 @@ For those interested, here's some pseudo code:
         MAJOR = lastMajor + 1
         MINOR = 0
         PATCH = 0
+    ELSEIF merged PR has a semver label; THEN
+      use that label's bump instead of the branch name
     ELSEIF merged feature/.* or enhancement/.* branches; THEN
         MAJOR = lastMajor
         MINOR = lastMinor + count of merged branches
@@ -277,6 +322,20 @@ For those interested, here's some pseudo code:
         ERROR: No feature, enhancement, fix, bugfix, hotfix, or ops branches detected!
 
   - When encountering this scenario, and a build is desired, you can simply create a branch with the appropriate naming convention and an empty commit, then merge it. Or use the bump scripts in the 'scripts/' directory of the repo for this action.
+
+- If a PR/MR label lookup is configured but fails (network, auth, etc.), the action fails with:
+
+        ERROR: 592 - PR/MR label lookup failed!
+
+  This is intentional: a version must never be computed from incomplete label data.
+
+## Local Testing
+
+Run the isolated test harness locally with:
+
+    bash scripts/tests.sh
+
+The script creates a temporary git repository, exercises repo and directory versioning paths, validates PR label precedence, squash-merge classification, and parallel full-history re-evaluation, and removes the fixture repo on exit. The same suite runs in CI on every pull request.
 
 - Merged branches not conforming to the above naming scheme will simply be ignored.
   - HINT: This can be useful when you don't want to increment the version.
