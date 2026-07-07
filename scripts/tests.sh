@@ -153,15 +153,41 @@ run_detect_new() {
 }
 
 assert_match() {
-  local expected="$1"
-  local actual="$2"
+  local label="$1"
+  local expected="$2"
+  local actual="$3"
 
   if grep -q "$expected" <<< "$actual"; then
     echo -e " \e[01;32mOK\e[0m - $actual"
+    summary_row "$label" "✅" "$actual"
   else
     FAILURE='true'
     echo -e " \e[01;31mFAIL\e[0m - expected '$expected', got '$actual'"
+    summary_row "$label" "❌" "expected '$expected', got '$actual'"
   fi
+}
+
+summary_init() {
+  [[ -z "$GITHUB_STEP_SUMMARY" ]] && return 0
+
+  {
+    echo '### Test Results'
+    echo ''
+    echo '| Test | Result | Output |'
+    echo '| ---- | :----: | ------ |'
+  } >> "$GITHUB_STEP_SUMMARY"
+}
+
+summary_row() {
+  [[ -z "$GITHUB_STEP_SUMMARY" ]] && return 0
+
+  local label="$1"
+  local result="$2"
+  local output="$3"
+
+  # Strip ANSI color codes and escape pipes so the output renders cleanly in markdown.
+  output=$(sed -e 's/\x1b\[[0-9;]*m//g' -e 's/|/\\|/g' <<< "$output")
+  echo "| ${label} | ${result} | ${output} |" >> "$GITHUB_STEP_SUMMARY"
 }
 
 test_previous() {
@@ -169,10 +195,11 @@ test_previous() {
   local expected="$2"
   local comment="$3"
   local actual=''
+  local label="Previous Version ${directory} (${comment})"
 
-  echo -e "\e[01;39mPrevious Version ${directory} (${comment})\e[0m"
+  echo -e "\e[01;39m${label}\e[0m"
   actual=$(run_detect_previous "$directory")
-  assert_match "$expected" "$actual"
+  assert_match "$label" "$expected" "$actual"
 }
 
 test_new() {
@@ -180,10 +207,11 @@ test_new() {
   local expected="$2"
   local comment="$3"
   local actual=''
+  local label="New Version ${directory} (${comment})"
 
-  echo -e "\e[01;39mNew Version ${directory} (${comment})\e[0m"
+  echo -e "\e[01;39m${label}\e[0m"
   actual=$(run_detect_new "$directory")
-  assert_match "$expected" "$actual"
+  assert_match "$label" "$expected" "$actual"
 }
 
 test_new_full() {
@@ -191,6 +219,7 @@ test_new_full() {
   local expected="$2"
   local comment="$3"
   local actual=''
+  local label="New Version (full re-evaluation) ${directory} (${comment})"
   local cmd=("$script_dir/detectNewVersion.sh" -f)
 
   if [[ "$directory" != './' ]]; then
@@ -199,14 +228,15 @@ test_new_full() {
 
   [[ -n "$LABEL_OVERRIDES" ]] && cmd+=(-l "$LABEL_OVERRIDES")
 
-  echo -e "\e[01;39mNew Version (full re-evaluation) ${directory} (${comment})\e[0m"
+  echo -e "\e[01;39m${label}\e[0m"
   actual=$("${cmd[@]}" 2>&1)
-  assert_match "$expected" "$actual"
+  assert_match "$label" "$expected" "$actual"
 }
 
 setup_repo
 
 printHeading 'Running isolated local tests'
+summary_init
 
 test_previous './' '0.0.0' 'repo initializes at zero'
 test_new './' '599' 'repo without qualifying merges'
